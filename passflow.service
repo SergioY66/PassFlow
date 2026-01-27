@@ -1,0 +1,27 @@
+[Unit]
+Description=PassFlow Camera and Peripheral Control System
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/PassFlowProject/build
+ExecStart=/home/pi/PassFlowProject/build/passflow
+Restart=on-failure
+RestartSec=10
+
+# Security settings
+PrivateTmp=false
+NoNewPrivileges=false
+
+# Give access to serial ports
+SupplementaryGroups=dialout
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=passflow
+
+[Install]
+WantedBy=multi-user.target

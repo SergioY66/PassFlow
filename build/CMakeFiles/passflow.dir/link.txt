@@ -1,0 +1,1 @@
+/usr/bin/c++  -Wall -Wextra -pthread -O3 -DNDEBUG -O3 CMakeFiles/passflow.dir/src/main.cpp.o CMakeFiles/passflow.dir/src/MainControl.cpp.o CMakeFiles/passflow.dir/src/VideoControl.cpp.o -o passflow  -lpthread -lstdc++fs 
