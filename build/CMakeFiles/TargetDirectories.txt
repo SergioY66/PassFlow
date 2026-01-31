@@ -1,7 +1,7 @@
-/home/sergio/PassFlowClaude/PassFlowProject/build/CMakeFiles/passflow.dir
-/home/sergio/PassFlowClaude/PassFlowProject/build/CMakeFiles/edit_cache.dir
-/home/sergio/PassFlowClaude/PassFlowProject/build/CMakeFiles/rebuild_cache.dir
-/home/sergio/PassFlowClaude/PassFlowProject/build/CMakeFiles/list_install_components.dir
-/home/sergio/PassFlowClaude/PassFlowProject/build/CMakeFiles/install.dir
-/home/sergio/PassFlowClaude/PassFlowProject/build/CMakeFiles/install/local.dir
-/home/sergio/PassFlowClaude/PassFlowProject/build/CMakeFiles/install/strip.dir
+/home/sergio/PassFlowClaude/build/CMakeFiles/passflow.dir
+/home/sergio/PassFlowClaude/build/CMakeFiles/edit_cache.dir
+/home/sergio/PassFlowClaude/build/CMakeFiles/rebuild_cache.dir
+/home/sergio/PassFlowClaude/build/CMakeFiles/list_install_components.dir
+/home/sergio/PassFlowClaude/build/CMakeFiles/install.dir
+/home/sergio/PassFlowClaude/build/CMakeFiles/install/local.dir
+/home/sergio/PassFlowClaude/build/CMakeFiles/install/strip.dir
