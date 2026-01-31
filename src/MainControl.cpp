@@ -8,15 +8,28 @@
 #include <sys/ioctl.h>
 
 MainControl::MainControl(std::shared_ptr<Logger> logger,
-                         std::shared_ptr<MessageQueue<Message>> videoControlQueue)
-    : logger_(logger), videoControlQueue_(videoControlQueue),
+                         std::shared_ptr<MessageQueue<Message>> videoControlQueue,
+                         std::shared_ptr<MySqlComm> dbComm)
+    : logger_(logger), videoControlQueue_(videoControlQueue), dbComm_(dbComm),
       running_(false), serialFd_(-1)
 {
+    // Initialize status to default (all doors open, power off)
+    currentStatus_ = SystemStatus_t();
+    previousStatus_ = SystemStatus_t();
 }
 
 MainControl::~MainControl()
 {
     stop();
+}
+
+void MainControl::updateSettings(int stopBeginDelay, int stopEndDelay)
+{
+    stopBeginDelay_ = stopBeginDelay;
+    stopEndDelay_ = stopEndDelay;
+    logger_->log("MainControl: Updated delays - stopBeginDelay=" + 
+                 std::to_string(stopBeginDelay_) + "s, stopEndDelay=" + 
+                 std::to_string(stopEndDelay_) + "s");
 }
 
 bool MainControl::findCH340Device()
@@ -189,9 +202,17 @@ void MainControl::stop()
     }
 }
 
+bool MainControl::validateStatusMessage(uint8_t status, uint8_t invStatus)
+{
+    // The second byte should be the bitwise NOT of the first byte
+    return (status ^ invStatus) == 0xFF;
+}
+
 void MainControl::receiverLoop()
 {
     uint8_t buffer[256];
+    uint8_t pendingByte = 0;
+    bool havePendingByte = false;
 
     while (running_)
     {
@@ -199,26 +220,42 @@ void MainControl::receiverLoop()
 
         if (bytesRead > 0)
         {
-            // Process each byte as a command
             for (int i = 0; i < bytesRead; i++)
             {
-                uint8_t cmdByte = buffer[i];
-                ReceivedCommand cmd = static_cast<ReceivedCommand>(cmdByte);
-
-                // Validate command is in valid range
-                if (cmdByte >= 0x01 && cmdByte <= 0x0C)
+                if (!havePendingByte)
                 {
-                    logger_->logCommand("Received command: 0x" +
-                                        std::string(1, "0123456789ABCDEF"[cmdByte >> 4]) +
-                                        std::string(1, "0123456789ABCDEF"[cmdByte & 0x0F]) +
-                                        " (" + getCommandName(cmd) + ")");
-                    processReceivedCommand(cmd);
+                    // First byte of the pair - this is SystemStatus
+                    pendingByte = buffer[i];
+                    havePendingByte = true;
                 }
                 else
                 {
-                    logger_->logError("Unknown command byte: 0x" +
-                                      std::string(1, "0123456789ABCDEF"[cmdByte >> 4]) +
-                                      std::string(1, "0123456789ABCDEF"[cmdByte & 0x0F]));
+                    // Second byte - this should be ~SystemStatus
+                    uint8_t invByte = buffer[i];
+                    
+                    if (validateStatusMessage(pendingByte, invByte))
+                    {
+                        // Valid message received
+                        SystemStatus_t newStatus = SystemStatus_t::fromByte(pendingByte);
+                        
+                        logger_->logCommand("Received valid SystemStatus: 0x" +
+                                            std::string(1, "0123456789ABCDEF"[pendingByte >> 4]) +
+                                            std::string(1, "0123456789ABCDEF"[pendingByte & 0x0F]));
+                        
+                        processSystemStatus(newStatus);
+                    }
+                    else
+                    {
+                        // Invalid message - validation failed
+                        logger_->logError("Invalid SystemStatus message: status=0x" +
+                                          std::string(1, "0123456789ABCDEF"[pendingByte >> 4]) +
+                                          std::string(1, "0123456789ABCDEF"[pendingByte & 0x0F]) +
+                                          " inv=0x" +
+                                          std::string(1, "0123456789ABCDEF"[invByte >> 4]) +
+                                          std::string(1, "0123456789ABCDEF"[invByte & 0x0F]));
+                    }
+                    
+                    havePendingByte = false;
                 }
             }
         }
@@ -249,6 +286,152 @@ void MainControl::senderLoop()
                              std::string(1, "0123456789ABCDEF"[byte & 0x0F]));
             }
         }
+    }
+}
+
+void MainControl::processSystemStatus(const SystemStatus_t& newStatus)
+{
+    auto now = std::chrono::system_clock::now();
+    
+    // Compare with previous status and log changes
+    compareAndLogChanges(currentStatus_, newStatus);
+    
+    // Update previous status
+    previousStatus_ = currentStatus_;
+    currentStatus_ = newStatus;
+    
+    // Handle door state changes for video recording
+    
+    // Door 0: was closed (1), now open (0)
+    if (previousStatus_.door_0 == 1 && newStatus.door_0 == 0)
+    {
+        door0OpenTime_ = now;
+        door0Open_ = true;
+        sendCommand(PeripheralCommand::Cam0ON);
+        sendCommand(PeripheralCommand::Light0ON);
+        logger_->log("Door 0 opened - camera and light ON");
+    }
+    // Door 0: was open (0), now closed (1)
+    else if (previousStatus_.door_0 == 0 && newStatus.door_0 == 1)
+    {
+        if (door0Open_)
+        {
+            door0Open_ = false;
+            
+            // Calculate start and stop times with delays
+            // start_date_time = datetime(Door open) - stopBeginDelay
+            // stop_date_time = datetime(Door close) + stopEndDelay
+            auto startTime = door0OpenTime_ - std::chrono::seconds(stopBeginDelay_);
+            auto stopTime = now + std::chrono::seconds(stopEndDelay_);
+            
+            // Send single message with both start and stop times
+            auto msg = Message::createStartStop(0, startTime, stopTime);
+            videoControlQueue_->push(msg);
+            
+            // Turn off camera and light after the delay
+            sendCommand(PeripheralCommand::Cam0OFF);
+            sendCommand(PeripheralCommand::Light0OFF);
+            
+            logger_->log("Door 0 closed - sending video segment request with delays");
+        }
+    }
+    
+    // Door 1: was closed (1), now open (0)
+    if (previousStatus_.door_1 == 1 && newStatus.door_1 == 0)
+    {
+        door1OpenTime_ = now;
+        door1Open_ = true;
+        sendCommand(PeripheralCommand::Cam1ON);
+        sendCommand(PeripheralCommand::Light1ON);
+        logger_->log("Door 1 opened - camera and light ON");
+    }
+    // Door 1: was open (0), now closed (1)
+    else if (previousStatus_.door_1 == 0 && newStatus.door_1 == 1)
+    {
+        if (door1Open_)
+        {
+            door1Open_ = false;
+            
+            // Calculate start and stop times with delays
+            auto startTime = door1OpenTime_ - std::chrono::seconds(stopBeginDelay_);
+            auto stopTime = now + std::chrono::seconds(stopEndDelay_);
+            
+            // Send single message with both start and stop times
+            auto msg = Message::createStartStop(1, startTime, stopTime);
+            videoControlQueue_->push(msg);
+            
+            // Turn off camera and light after the delay
+            sendCommand(PeripheralCommand::Cam1OFF);
+            sendCommand(PeripheralCommand::Light1OFF);
+            
+            logger_->log("Door 1 closed - sending video segment request with delays");
+        }
+    }
+}
+
+void MainControl::compareAndLogChanges(const SystemStatus_t& oldStatus, const SystemStatus_t& newStatus)
+{
+    auto now = std::chrono::system_clock::now();
+    std::string timestamp = formatTimestamp(now);
+    
+    // Check Door 0
+    if (oldStatus.door_0 != newStatus.door_0)
+    {
+        EventType event = (newStatus.door_0 == 0) ? EventType::Door0Open : EventType::Door0Close;
+        if (dbComm_) {
+            dbComm_->logEvent(event, timestamp);
+        }
+        logger_->log("Status change: Door 0 " + std::string((newStatus.door_0 == 0) ? "OPENED" : "CLOSED"));
+    }
+    
+    // Check Door 1
+    if (oldStatus.door_1 != newStatus.door_1)
+    {
+        EventType event = (newStatus.door_1 == 0) ? EventType::Door1Open : EventType::Door1Close;
+        if (dbComm_) {
+            dbComm_->logEvent(event, timestamp);
+        }
+        logger_->log("Status change: Door 1 " + std::string((newStatus.door_1 == 0) ? "OPENED" : "CLOSED"));
+    }
+    
+    // Check Cover 0
+    if (oldStatus.cover_0 != newStatus.cover_0)
+    {
+        EventType event = (newStatus.cover_0 == 0) ? EventType::Cover0Open : EventType::Cover0Close;
+        if (dbComm_) {
+            dbComm_->logEvent(event, timestamp);
+        }
+        logger_->log("Status change: Cover 0 " + std::string((newStatus.cover_0 == 0) ? "OPENED" : "CLOSED"));
+    }
+    
+    // Check Cover 1
+    if (oldStatus.cover_1 != newStatus.cover_1)
+    {
+        EventType event = (newStatus.cover_1 == 0) ? EventType::Cover1Open : EventType::Cover1Close;
+        if (dbComm_) {
+            dbComm_->logEvent(event, timestamp);
+        }
+        logger_->log("Status change: Cover 1 " + std::string((newStatus.cover_1 == 0) ? "OPENED" : "CLOSED"));
+    }
+    
+    // Check Main Supply
+    if (oldStatus.mainSupply != newStatus.mainSupply)
+    {
+        EventType event = (newStatus.mainSupply == 1) ? EventType::MainSupplyOn : EventType::MainSupplyOff;
+        if (dbComm_) {
+            dbComm_->logEvent(event, timestamp);
+        }
+        logger_->log("Status change: Main Supply " + std::string((newStatus.mainSupply == 1) ? "ON" : "OFF"));
+    }
+    
+    // Check Ignition
+    if (oldStatus.ignition != newStatus.ignition)
+    {
+        EventType event = (newStatus.ignition == 1) ? EventType::IgnitionOn : EventType::IgnitionOff;
+        if (dbComm_) {
+            dbComm_->logEvent(event, timestamp);
+        }
+        logger_->log("Status change: Ignition " + std::string((newStatus.ignition == 1) ? "ON" : "OFF"));
     }
 }
 
@@ -287,6 +470,8 @@ std::string MainControl::getCommandName(ReceivedCommand cmd)
 
 void MainControl::processReceivedCommand(ReceivedCommand cmd)
 {
+    // Legacy command processing - kept for backward compatibility
+    // This method is no longer used as we now process SystemStatus messages
     auto now = std::chrono::system_clock::now();
 
     switch (cmd)
@@ -294,7 +479,6 @@ void MainControl::processReceivedCommand(ReceivedCommand cmd)
     case ReceivedCommand::Door0_Open:
         door0OpenTime_ = now;
         door0Open_ = true;
-        // Send Cam0ON and Light0ON
         sendCommand(PeripheralCommand::Cam0ON);
         sendCommand(PeripheralCommand::Light0ON);
         break;
@@ -303,10 +487,10 @@ void MainControl::processReceivedCommand(ReceivedCommand cmd)
         if (door0Open_)
         {
             door0Open_ = false;
-            // Send StartStop message to VideoControl
-            auto msg = Message::createStartStop(0, door0OpenTime_, now);
+            auto startTime = door0OpenTime_ - std::chrono::seconds(stopBeginDelay_);
+            auto stopTime = now + std::chrono::seconds(stopEndDelay_);
+            auto msg = Message::createStartStop(0, startTime, stopTime);
             videoControlQueue_->push(msg);
-            // Turn off camera and light
             sendCommand(PeripheralCommand::Cam0OFF);
             sendCommand(PeripheralCommand::Light0OFF);
         }
@@ -315,7 +499,6 @@ void MainControl::processReceivedCommand(ReceivedCommand cmd)
     case ReceivedCommand::Door1_Open:
         door1OpenTime_ = now;
         door1Open_ = true;
-        // Send Cam1ON and Light1ON
         sendCommand(PeripheralCommand::Cam1ON);
         sendCommand(PeripheralCommand::Light1ON);
         break;
@@ -324,17 +507,16 @@ void MainControl::processReceivedCommand(ReceivedCommand cmd)
         if (door1Open_)
         {
             door1Open_ = false;
-            // Send StartStop message to VideoControl
-            auto msg = Message::createStartStop(1, door1OpenTime_, now);
+            auto startTime = door1OpenTime_ - std::chrono::seconds(stopBeginDelay_);
+            auto stopTime = now + std::chrono::seconds(stopEndDelay_);
+            auto msg = Message::createStartStop(1, startTime, stopTime);
             videoControlQueue_->push(msg);
-            // Turn off camera and light
             sendCommand(PeripheralCommand::Cam1OFF);
             sendCommand(PeripheralCommand::Light1OFF);
         }
         break;
 
     default:
-        // Log other commands but don't process them yet
         break;
     }
 }

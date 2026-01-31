@@ -3,8 +3,8 @@
 
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -O3
-INCLUDES = -I./include
-LDFLAGS = -pthread -lstdc++fs
+INCLUDES = -I./include $(shell mariadb_config --cflags)
+LDFLAGS = -pthread -lstdc++fs $(shell mariadb_config --libs)
 
 # Directories
 SRC_DIR = src
@@ -15,7 +15,8 @@ BIN_DIR = $(BUILD_DIR)
 # Source files
 SOURCES = $(SRC_DIR)/main.cpp \
           $(SRC_DIR)/MainControl.cpp \
-          $(SRC_DIR)/VideoControl.cpp
+          $(SRC_DIR)/VideoControl.cpp \
+		  $(SRC_DIR)/MySqlComm.cpp
 
 # Object files
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
@@ -59,7 +60,7 @@ run: $(TARGET)
 	./$(TARGET)
 
 # Debug build
-debug: CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG
+debug: CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -g -O0 -DDEBUG $(shell mariadb_config --cflags)
 debug: clean $(TARGET)
 
 # Show variables

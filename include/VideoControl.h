@@ -11,6 +11,7 @@
 #include "Common.h"
 #include "MessageQueue.h"
 #include "Logger.h"
+#include "MySqlComm.h"
 
 struct CameraConfig {
     int id;
@@ -23,6 +24,7 @@ class CameraRecorder {
 private:
     CameraConfig config_;
     std::shared_ptr<Logger> logger_;
+    std::shared_ptr<MySqlComm> dbComm_;
     
     std::atomic<bool> running_;
     std::thread recordThread_;
@@ -36,13 +38,19 @@ private:
     std::string sourceDir_;
     std::string outputDir_;
     
+    // Settings from database
+    int daysBeforeDeleteVideo_;
+    
     void recordLoop();
     bool startFFmpeg();
     void stopFFmpeg();
     std::string generateFilename();
+    void cleanupOldVideos();
     
 public:
-    CameraRecorder(const CameraConfig& config, std::shared_ptr<Logger> logger);
+    CameraRecorder(const CameraConfig& config, 
+                   std::shared_ptr<Logger> logger,
+                   std::shared_ptr<MySqlComm> dbComm);
     ~CameraRecorder();
     
     void start();
@@ -50,6 +58,7 @@ public:
     bool isRunning() const { return running_; }
     
     void processStartStopMessage(const StartStopMessage& msg);
+    void setDaysBeforeDeleteVideo(int days) { daysBeforeDeleteVideo_ = days; }
     
 private:
     void extractAndProcessSegment(const std::string& sourceFile,
@@ -61,6 +70,7 @@ class VideoControl {
 private:
     std::shared_ptr<Logger> logger_;
     std::shared_ptr<MessageQueue<Message>> messageQueue_;
+    std::shared_ptr<MySqlComm> dbComm_;
     
     std::vector<std::unique_ptr<CameraRecorder>> cameras_;
     std::thread messageThread_;
@@ -71,7 +81,8 @@ private:
     
 public:
     VideoControl(std::shared_ptr<Logger> logger,
-                std::shared_ptr<MessageQueue<Message>> messageQueue);
+                std::shared_ptr<MessageQueue<Message>> messageQueue,
+                std::shared_ptr<MySqlComm> dbComm);
     ~VideoControl();
     
     bool initialize();

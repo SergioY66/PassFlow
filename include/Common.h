@@ -7,8 +7,49 @@
 #include <iomanip>
 #include <sstream>
 #include <variant>
+#include <cstdint>
 
-// Commands received from peripherals (1 byte each)
+// SystemStatus structure matching the USB protocol
+// Sent as 2 bytes: SystemStatus followed by ~SystemStatus (for validation)
+// Bit values: 0=OPENED/OFF, 1=CLOSED/ON
+#pragma pack(push, 1)
+struct SystemStatus_t {
+    uint8_t door_0      : 1;    // Door 0 state: 0=OPENED, 1=CLOSED
+    uint8_t door_1      : 1;    // Door 1 state: 0=OPENED, 1=CLOSED
+    uint8_t cover_0     : 1;    // Cover 0 state: 0=OPENED, 1=CLOSED
+    uint8_t cover_1     : 1;    // Cover 1 state: 0=OPENED, 1=CLOSED
+    uint8_t mainSupply  : 1;    // Main supply: 0=OFF, 1=ON
+    uint8_t ignition    : 1;    // Ignition: 0=OFF, 1=ON
+    uint8_t reserved    : 2;    // Reserved bits for future use / padding
+    
+    // Default constructor - all doors open, power off
+    SystemStatus_t() : door_0(0), door_1(0), cover_0(0), cover_1(0),
+                       mainSupply(0), ignition(0), reserved(0) {}
+    
+    // Convert to single byte
+    uint8_t toByte() const {
+        return *reinterpret_cast<const uint8_t*>(this);
+    }
+    
+    // Create from byte
+    static SystemStatus_t fromByte(uint8_t byte) {
+        SystemStatus_t status;
+        *reinterpret_cast<uint8_t*>(&status) = byte;
+        return status;
+    }
+    
+    // Compare two status values
+    bool operator==(const SystemStatus_t& other) const {
+        return toByte() == other.toByte();
+    }
+    
+    bool operator!=(const SystemStatus_t& other) const {
+        return !(*this == other);
+    }
+};
+#pragma pack(pop)
+
+// Legacy commands received from peripherals (kept for backward compatibility)
 enum class ReceivedCommand : uint8_t {
     Door0_Open = 0x01,
     Door0_Close = 0x02,
