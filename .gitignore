@@ -18,6 +18,9 @@ dist/
 
 # Package files
 *.jar
+*.o
+*.d
+build/
 
 # Maven
 target/
