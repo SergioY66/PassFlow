@@ -230,7 +230,7 @@ void MainControl::receiverLoop()
                 }
                 else
                 {
-                    // Second byte - this should be ~SystemStatus!!!
+                    // Second byte - this should be ~SystemStatus!!!==============
                     uint8_t invByte = buffer[i];
 
                     if (validateStatusMessage(pendingByte, invByte))
